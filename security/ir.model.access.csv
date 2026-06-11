@@ -1,0 +1,3 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_bravo_product_barcode_alias_user,bravo.product.barcode.alias.user,model_bravo_product_barcode_alias,bravo_product_multibarcode.group_bravo_multibarcode_user,1,0,0,0
+access_bravo_product_barcode_alias_manager,bravo.product.barcode.alias.manager,model_bravo_product_barcode_alias,bravo_product_multibarcode.group_bravo_multibarcode_manager,1,1,1,1

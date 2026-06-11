@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_bravo_product_barcode_alias_list" model="ir.ui.view">
+        <field name="name">bravo.product.barcode.alias.list</field>
+        <field name="model">bravo.product.barcode.alias</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="barcode"/>
+                <field name="product_id"/>
+                <field name="product_tmpl_id" optional="hide"/>
+                <field name="company_id" optional="hide"/>
+                <field name="active"/>
+                <field name="note" optional="show"/>
+                <field name="created_during_inventory" readonly="1" optional="hide"/>
+                <field name="created_by_id" readonly="1" optional="hide"/>
+                <field name="create_date" optional="hide"/>
+            </list>
+        </field>
+    </record>
+    <record id="view_bravo_product_barcode_alias_form" model="ir.ui.view">
+        <field name="name">bravo.product.barcode.alias.form</field>
+        <field name="model">bravo.product.barcode.alias</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <group>
+                        <field name="barcode"/>
+                        <field name="product_id"/>
+                        <field name="product_tmpl_id" readonly="1"/>
+                        <field name="company_id"/>
+                        <field name="active"/>
+                        <field name="note"/>
+                        <field name="created_during_inventory" readonly="1"/>
+                        <field name="created_by_id" readonly="1"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="action_bravo_product_barcode_alias" model="ir.actions.act_window">
+        <field name="name">Additional Barcodes</field>
+        <field name="res_model">bravo.product.barcode.alias</field>
+        <field name="view_mode">list,form</field>
+    </record>
+    <menuitem id="menu_bravo_product_multibarcode_root" name="Bravo Product Barcodes" sequence="95" groups="bravo_product_multibarcode.group_bravo_multibarcode_user,bravo_product_multibarcode.group_bravo_multibarcode_manager"/>
+    <menuitem id="menu_bravo_product_barcode_alias" name="Additional Barcodes" parent="menu_bravo_product_multibarcode_root" action="action_bravo_product_barcode_alias" sequence="10" groups="bravo_product_multibarcode.group_bravo_multibarcode_user,bravo_product_multibarcode.group_bravo_multibarcode_manager"/>
+    <record id="view_product_product_form_bravo_barcode_aliases" model="ir.ui.view">
+        <field name="name">product.product.form.bravo.barcode.aliases</field>
+        <field name="model">product.product</field>
+        <field name="inherit_id" ref="product.product_normal_form_view"/>
+        <field name="arch" type="xml">
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button name="action_open_bravo_barcode_aliases" type="object" class="oe_stat_button" icon="fa-barcode">
+                    <field name="bravo_barcode_alias_count" widget="statinfo" string="Extra Barcodes"/>
+                </button>
+            </xpath>
+            <xpath expr="//notebook" position="inside">
+                <page string="Additional Barcodes" name="bravo_additional_barcodes">
+                    <field name="bravo_barcode_alias_ids" context="{'default_product_id': id}">
+                        <list editable="bottom">
+                            <field name="barcode"/>
+                            <field name="active"/>
+                            <field name="note"/>
+                            <field name="created_during_inventory" readonly="1" optional="hide"/>
+                            <field name="created_by_id" readonly="1" optional="hide"/>
+                        </list>
+                    </field>
+                </page>
+            </xpath>
+        </field>
+    </record>
+    <record id="view_product_template_form_bravo_barcode_aliases" model="ir.ui.view">
+        <field name="name">product.template.form.bravo.barcode.aliases</field>
+        <field name="model">product.template</field>
+        <field name="inherit_id" ref="product.product_template_only_form_view"/>
+        <field name="arch" type="xml">
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button name="action_open_bravo_barcode_aliases" type="object" class="oe_stat_button" icon="fa-barcode">
+                    <field name="bravo_barcode_alias_count" widget="statinfo" string="Extra Barcodes"/>
+                </button>
+            </xpath>
+        </field>
+    </record>
+</odoo>
