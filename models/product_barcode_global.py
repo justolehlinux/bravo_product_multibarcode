@@ -82,11 +82,31 @@ class ProductProduct(models.Model):
 
     @api.model
     def _bravo_normalize_barcode(self, barcode):
-        return (barcode or '').strip()
+        if barcode in (False, None):
+            return ''
+        return str(barcode).strip()
 
     @api.model
-    def _bravo_supported_barcode_operator(self, operator):
-        return operator in ('=', '==', '=ilike', 'ilike', 'like', 'in')
+    def _bravo_non_empty_values(self, values):
+        return [self._bravo_normalize_barcode(v) for v in (values or []) if self._bravo_normalize_barcode(v)]
+
+    @api.model
+    def _bravo_contains_false_value(self, values):
+        return any(not self._bravo_normalize_barcode(v) for v in (values or []))
+
+    @api.model
+    def _bravo_positive_operator(self, operator):
+        return operator in ('=', '==', '=ilike', '=like', 'ilike', 'like', 'in')
+
+    @api.model
+    def _bravo_negative_operator_to_positive(self, operator):
+        return {
+            '!=': '=',
+            '<>': '=',
+            'not ilike': 'ilike',
+            'not like': 'like',
+            'not in': 'in',
+        }.get(operator)
 
     @api.model
     def _bravo_sql_like_value(self, operator, value):
@@ -102,11 +122,11 @@ class ProductProduct(models.Model):
         search handler to the barcode field.
         """
         operator = operator or '='
-        if not value or not self._bravo_supported_barcode_operator(operator):
+        if not self._bravo_positive_operator(operator):
             return []
         table = self._table
         if operator == 'in':
-            values = [self._bravo_normalize_barcode(v) for v in (value or []) if self._bravo_normalize_barcode(v)]
+            values = self._bravo_non_empty_values(value)
             if not values:
                 return []
             self.env.cr.execute(
@@ -114,10 +134,15 @@ class ProductProduct(models.Model):
                 (values,),
             )
             return [row[0] for row in self.env.cr.fetchall()]
+
+        if not self._bravo_normalize_barcode(value):
+            return []
+
         sql_operator = {
             '=': '=',
             '==': '=',
             '=ilike': 'ILIKE',
+            '=like': 'LIKE',
             'ilike': 'ILIKE',
             'like': 'LIKE',
         }.get(operator)
@@ -132,10 +157,10 @@ class ProductProduct(models.Model):
     @api.model
     def _bravo_alias_product_ids_for_barcode(self, barcode, operator='='):
         operator = operator or '='
-        if not barcode or not self._bravo_supported_barcode_operator(operator):
+        if not self._bravo_positive_operator(operator):
             return []
         if operator == 'in':
-            values = [self._bravo_normalize_barcode(v) for v in (barcode or []) if self._bravo_normalize_barcode(v)]
+            values = self._bravo_non_empty_values(barcode)
             if not values:
                 return []
             domain = [('active', '=', True), ('barcode', 'in', values)]
@@ -148,26 +173,93 @@ class ProductProduct(models.Model):
 
     @api.model
     def _bravo_product_ids_by_any_barcode(self, barcode, operator='='):
-        if not barcode:
-            return []
         op = operator or '='
+        if op == 'in':
+            values = self._bravo_non_empty_values(barcode)
+            if not values:
+                return []
+            ids = self._bravo_primary_barcode_ids(values, operator='in')
+            ids += self._bravo_alias_product_ids_for_barcode(values, operator='in')
+            return list(dict.fromkeys(ids))
+        if not self._bravo_normalize_barcode(barcode):
+            return []
         ids = self._bravo_primary_barcode_ids(barcode, operator=op)
         ids += self._bravo_alias_product_ids_for_barcode(barcode, operator=op)
         return list(dict.fromkeys(ids))
 
     @api.model
-    def _search_bravo_barcode(self, operator, value):
-        ids = self._bravo_product_ids_by_any_barcode(value, operator=operator or '=')
-        return [('id', 'in', ids or [0])]
+    def _bravo_all_barcoded_product_ids(self):
+        """Products that have either a primary barcode or at least one active Bravo alias."""
+        self.env.cr.execute(f"""
+            SELECT id
+              FROM {self._table}
+             WHERE barcode IS NOT NULL
+               AND btrim(barcode) != ''
+            UNION
+            SELECT product_id
+              FROM bravo_product_barcode_alias
+             WHERE active IS TRUE
+               AND barcode IS NOT NULL
+               AND btrim(barcode) != ''
+        """)
+        return [row[0] for row in self.env.cr.fetchall()]
 
+    @api.model
+    def _search_bravo_barcode(self, operator, value):
+        """Search handler for product.product.barcode.
+
+        The previous version only handled positive operators. That is dangerous
+        because normal Odoo filters also emit domains such as ('barcode', '!=', False)
+        and ('barcode', 'not in', ...). Returning no records for those domains breaks
+        standard product searches and POS/server loading in subtle ways.
+        """
+        operator = operator or '='
+
+        # Odoo "is set" / "is not set" style domains.
+        if operator in ('=', '==') and not self._bravo_normalize_barcode(value):
+            return [('id', 'not in', self._bravo_all_barcoded_product_ids() or [0])]
+        if operator in ('!=', '<>') and not self._bravo_normalize_barcode(value):
+            return [('id', 'in', self._bravo_all_barcoded_product_ids() or [0])]
+
+        if operator == 'in':
+            values = value if isinstance(value, (list, tuple, set)) else [value]
+            ids = self._bravo_product_ids_by_any_barcode(values, operator='in')
+            if self._bravo_contains_false_value(values):
+                return expression.OR([
+                    [('id', 'in', ids or [0])],
+                    [('id', 'not in', self._bravo_all_barcoded_product_ids() or [0])],
+                ])
+            return [('id', 'in', ids or [0])]
+
+        if operator == 'not in':
+            values = value if isinstance(value, (list, tuple, set)) else [value]
+            ids = self._bravo_product_ids_by_any_barcode(values, operator='in')
+            if self._bravo_contains_false_value(values):
+                return [
+                    ('id', 'in', self._bravo_all_barcoded_product_ids() or [0]),
+                    ('id', 'not in', ids or [0]),
+                ]
+            return [('id', 'not in', ids or [0])]
+
+        positive_operator = self._bravo_negative_operator_to_positive(operator)
+        if positive_operator:
+            ids = self._bravo_product_ids_by_any_barcode(value, operator=positive_operator)
+            return [('id', 'not in', ids or [0])]
+
+        if self._bravo_positive_operator(operator):
+            ids = self._bravo_product_ids_by_any_barcode(value, operator=operator)
+            return [('id', 'in', ids or [0])]
+
+        # Keep unsupported operators safe instead of returning false positives.
+        return [('id', 'in', [0])]
 
     @api.model
     def bravo_find_by_any_barcode(self, barcode, company=None):
         """Public API: return exactly one product matching primary barcode or Bravo alias.
 
         Other modules should call this method instead of duplicating barcode
-        lookup logic. It reuses the working Bravo field-search implementation
-        and does not override product.product._search().
+        lookup logic. It reuses the Bravo field-search implementation and does
+        not override product.product._search().
         """
         normalized = self._bravo_normalize_barcode(barcode)
         if not normalized:
@@ -204,9 +296,8 @@ class ProductProduct(models.Model):
             return expression.OR([domain, self._bravo_alias_domain_for_search_value(value, operator)])
         return domain
 
-    # Odoo 19 removed/changed the old internal _name_search contract.
-    # Do not override name_search here. The supported extension point is
-    # _search_display_name(), and the default BaseModel.name_search() uses it.
+    # Odoo 19 default name_search() searches display_name. Our
+    # _search_display_name() already adds Bravo alias lookup.
 
     @api.model
     def _search_by_barcode(self, barcode, *args, **kwargs):
@@ -272,10 +363,12 @@ class ProductTemplate(models.Model):
         search='_search_bravo_barcode_alias_search',
     )
 
+    @api.depends('product_variant_ids.bravo_barcode_alias_count')
     def _compute_bravo_barcode_alias_count(self):
         for template in self:
             template.bravo_barcode_alias_count = sum(template.product_variant_ids.mapped('bravo_barcode_alias_count'))
 
+    @api.depends('product_variant_ids.bravo_all_barcodes')
     def _compute_bravo_barcode_alias_search(self):
         for template in self:
             template.bravo_barcode_alias_search = ' '.join(template.product_variant_ids.mapped('bravo_all_barcodes'))
