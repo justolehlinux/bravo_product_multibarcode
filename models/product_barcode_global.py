@@ -95,6 +95,56 @@ class ProductProduct(models.Model):
         return any(not self._bravo_normalize_barcode(v) for v in (values or []))
 
     @api.model
+    def _bravo_ean13_check_digit(self, first_12_digits):
+        """Return the EAN-13 check digit for the first 12 digits.
+
+        Odoo POS barcode nomenclature can resolve variable weight/price
+        barcodes before product lookup. Normal backend list/search screens do
+        not run that parser. This helper lets backend search normalize common
+        weighted EAN-13 labels such as 2801280002214 to the product barcode
+        2801280000005.
+        """
+        digits = [int(d) for d in str(first_12_digits)]
+        total = sum(digits[0::2]) + 3 * sum(digits[1::2])
+        return str((10 - (total % 10)) % 10)
+
+    @api.model
+    def _bravo_weight_barcode_candidates(self, barcode):
+        """Return possible fixed product barcodes for variable EAN-13 labels.
+
+        Common retail scales print EAN-13 labels where the first 7 digits
+        identify the product, the next 5 digits carry weight/price, and the
+        last digit is the EAN checksum. Odoo POS resolves this via barcode
+        nomenclature; backend product list searches need the same practical
+        normalization.
+
+        Example:
+            scanned label: 2801280002214
+            product code:  2801280000005
+        """
+        code = self._bravo_normalize_barcode(barcode)
+        if not (len(code) == 13 and code.isdigit() and code[:2] >= '20' and code[:2] <= '29'):
+            return []
+
+        candidates = []
+
+        # Default EAN weighted/price format: PP + 5 product digits + 5 value digits + C
+        first_12 = code[:7] + '00000'
+        candidates.append(first_12 + self._bravo_ean13_check_digit(first_12))
+
+        return [candidate for candidate in dict.fromkeys(candidates) if candidate != code]
+
+    @api.model
+    def _bravo_expand_barcode_values(self, values):
+        expanded = []
+        for value in (values or []):
+            normalized = self._bravo_normalize_barcode(value)
+            if normalized:
+                expanded.append(normalized)
+                expanded.extend(self._bravo_weight_barcode_candidates(normalized))
+        return list(dict.fromkeys(expanded))
+
+    @api.model
     def _bravo_positive_operator(self, operator):
         return operator in ('=', '==', '=ilike', '=like', 'ilike', 'like', 'in')
 
@@ -117,26 +167,30 @@ class ProductProduct(models.Model):
 
     @api.model
     def _bravo_primary_barcode_ids(self, value, operator='='):
-        """Search the real product_product.barcode column without calling ORM
-        search on barcode again. This avoids recursion after adding the custom
-        search handler to the barcode field.
+        """Search the real product_product.barcode column without ORM recursion.
+
+        Odoo 19 calls barcode searches from many different places. Use direct SQL
+        and btrim() so a barcode accidentally saved with spaces still resolves.
         """
         operator = operator or '='
         if not self._bravo_positive_operator(operator):
             return []
         table = self._table
         if operator == 'in':
-            values = self._bravo_non_empty_values(value)
+            values = self._bravo_expand_barcode_values(value)
             if not values:
                 return []
             self.env.cr.execute(
-                f'SELECT id FROM {table} WHERE barcode = ANY(%s)',
+                f"SELECT id FROM {table} WHERE btrim(barcode) = ANY(%s)",
                 (values,),
             )
             return [row[0] for row in self.env.cr.fetchall()]
 
-        if not self._bravo_normalize_barcode(value):
+        needle = self._bravo_normalize_barcode(value)
+        if not needle:
             return []
+
+        candidates = self._bravo_weight_barcode_candidates(needle)
 
         sql_operator = {
             '=': '=',
@@ -149,27 +203,87 @@ class ProductProduct(models.Model):
         if not sql_operator:
             return []
         self.env.cr.execute(
-            f'SELECT id FROM {table} WHERE barcode {sql_operator} %s',
-            (self._bravo_sql_like_value(operator, value),),
+            f"SELECT id FROM {table} WHERE btrim(barcode) {sql_operator} %s",
+            (self._bravo_sql_like_value(operator, needle),),
         )
-        return [row[0] for row in self.env.cr.fetchall()]
+        ids = [row[0] for row in self.env.cr.fetchall()]
+        if candidates:
+            self.env.cr.execute(
+                f"SELECT id FROM {table} WHERE btrim(barcode) = ANY(%s)",
+                (candidates,),
+            )
+            ids += [row[0] for row in self.env.cr.fetchall()]
+        return list(dict.fromkeys(ids))
 
     @api.model
     def _bravo_alias_product_ids_for_barcode(self, barcode, operator='='):
+        """Return product IDs matching Bravo aliases using direct SQL.
+
+        This avoids depending on search views/name_search and is the backend
+        source of truth for product.product, product.template and stock screens.
+        """
         operator = operator or '='
         if not self._bravo_positive_operator(operator):
             return []
+
+        table = self.env['bravo.product.barcode.alias']._table
         if operator == 'in':
-            values = self._bravo_non_empty_values(barcode)
+            values = self._bravo_expand_barcode_values(barcode)
             if not values:
                 return []
-            domain = [('active', '=', True), ('barcode', 'in', values)]
-        else:
-            barcode = self._bravo_normalize_barcode(barcode)
-            if not barcode:
-                return []
-            domain = [('active', '=', True), ('barcode', operator, barcode)]
-        return self.env['bravo.product.barcode.alias'].sudo().search(domain).mapped('product_id').ids
+            self.env.cr.execute(
+                f"""
+                SELECT product_id
+                  FROM {table}
+                 WHERE active IS TRUE
+                   AND product_id IS NOT NULL
+                   AND btrim(barcode) = ANY(%s)
+                """,
+                (values,),
+            )
+            return [row[0] for row in self.env.cr.fetchall()]
+
+        needle = self._bravo_normalize_barcode(barcode)
+        if not needle:
+            return []
+
+        candidates = self._bravo_weight_barcode_candidates(needle)
+
+        sql_operator = {
+            '=': '=',
+            '==': '=',
+            '=ilike': 'ILIKE',
+            '=like': 'LIKE',
+            'ilike': 'ILIKE',
+            'like': 'LIKE',
+        }.get(operator)
+        if not sql_operator:
+            return []
+
+        self.env.cr.execute(
+            f"""
+            SELECT product_id
+              FROM {table}
+             WHERE active IS TRUE
+               AND product_id IS NOT NULL
+               AND btrim(barcode) {sql_operator} %s
+            """,
+            (self._bravo_sql_like_value(operator, needle),),
+        )
+        ids = [row[0] for row in self.env.cr.fetchall()]
+        if candidates:
+            self.env.cr.execute(
+                f"""
+                SELECT product_id
+                  FROM {table}
+                 WHERE active IS TRUE
+                   AND product_id IS NOT NULL
+                   AND btrim(barcode) = ANY(%s)
+                """,
+                (candidates,),
+            )
+            ids += [row[0] for row in self.env.cr.fetchall()]
+        return list(dict.fromkeys(ids))
 
     @api.model
     def _bravo_product_ids_by_any_barcode(self, barcode, operator='='):
@@ -296,8 +410,33 @@ class ProductProduct(models.Model):
             return expression.OR([domain, self._bravo_alias_domain_for_search_value(value, operator)])
         return domain
 
-    # Odoo 19 default name_search() searches display_name. Our
-    # _search_display_name() already adds Bravo alias lookup.
+    @api.model
+    def name_search(self, name='', domain=None, operator='ilike', limit=100):
+        """Make Many2one/product autocomplete find Bravo alias barcodes.
+
+        Alias matches are returned first. The earlier implementation called
+        super() first and only appended aliases afterwards; in some stock screens
+        Odoo's optimized product search never reached the alias part reliably.
+        """
+        domain = domain or []
+        if name and operator not in ('not ilike', 'not like', '!=', '<>', 'not in'):
+            alias_domain = expression.AND([
+                domain,
+                self._bravo_alias_domain_for_search_value(name, operator),
+            ])
+            alias_products = self.search(alias_domain, limit=limit)
+            alias_results = [(product.id, product.display_name) for product in alias_products.sudo()]
+            if limit and len(alias_results) >= limit:
+                return alias_results
+
+            existing_ids = [record_id for record_id, _display_name in alias_results]
+            remaining = False if not limit else max(limit - len(existing_ids), 0)
+            super_domain = domain
+            if existing_ids:
+                super_domain = expression.AND([super_domain, [('id', 'not in', existing_ids)]])
+            return alias_results + super().name_search(name=name, domain=super_domain, operator=operator, limit=remaining)
+
+        return super().name_search(name=name, domain=domain, operator=operator, limit=limit)
 
     @api.model
     def _search_by_barcode(self, barcode, *args, **kwargs):
@@ -353,6 +492,14 @@ class ProductProduct(models.Model):
 class ProductTemplate(models.Model):
     _inherit = 'product.template'
 
+    # Odoo product.template has its own computed barcode field with a custom
+    # _search_barcode() that only delegates to product_variant_ids.barcode.
+    # In the normal Products / Номенклатура screen the search view already
+    # searches ('barcode', 'ilike', typed_text). If we do not replace the
+    # template barcode search handler too, that standard search can still miss
+    # Bravo alias barcodes even when product.product and POS work correctly.
+    barcode = fields.Char(search='_search_bravo_template_barcode')
+
     bravo_barcode_alias_count = fields.Integer(
         string='Additional Barcode Count',
         compute='_compute_bravo_barcode_alias_count',
@@ -374,15 +521,38 @@ class ProductTemplate(models.Model):
             template.bravo_barcode_alias_search = ' '.join(template.product_variant_ids.mapped('bravo_all_barcodes'))
 
     @api.model
-    def _search_bravo_barcode_alias_search(self, operator, value):
-        Product = self.env['product.product']
+    def _bravo_template_ids_by_any_barcode(self, value, operator='ilike'):
+        """Return template IDs for primary or Bravo alias barcodes.
+
+        This is deliberately direct and low-level: Inventory → Products is a
+        product.template screen, so template search must not depend on product
+        name_search or search-view behavior.
+        """
+        Product = self.env['product.product'].with_context(active_test=False)
         product_ids = Product._bravo_product_ids_by_any_barcode(value, operator=operator or 'ilike')
-        templates = Product.browse(product_ids).mapped('product_tmpl_id')
-        return [('id', 'in', templates.ids or [0])]
+        if not product_ids:
+            return []
+        self.env.cr.execute(
+            "SELECT DISTINCT product_tmpl_id FROM product_product WHERE id = ANY(%s)",
+            (product_ids,),
+        )
+        return [row[0] for row in self.env.cr.fetchall() if row[0]]
+
+    @api.model
+    def _search_bravo_template_barcode(self, operator, value):
+        """Make the standard product.template barcode search resolve Bravo aliases."""
+        template_ids = self._bravo_template_ids_by_any_barcode(value, operator or 'ilike')
+        return [('id', 'in', template_ids or [0])]
+
+    @api.model
+    def _search_bravo_barcode_alias_search(self, operator, value):
+        template_ids = self._bravo_template_ids_by_any_barcode(value, operator or 'ilike')
+        return [('id', 'in', template_ids or [0])]
 
     @api.model
     def _bravo_template_alias_domain(self, value, operator='ilike'):
-        return self._search_bravo_barcode_alias_search(operator, value)
+        template_ids = self._bravo_template_ids_by_any_barcode(value, operator or 'ilike')
+        return [('id', 'in', template_ids or [0])]
 
     def _search_display_name(self, operator, value):
         domain = super()._search_display_name(operator, value)
@@ -390,8 +560,32 @@ class ProductTemplate(models.Model):
             return expression.OR([domain, self._bravo_template_alias_domain(value, operator)])
         return domain
 
-    # Odoo 19 default name_search() searches display_name. Our
-    # _search_display_name() already adds Bravo alias lookup.
+    @api.model
+    def name_search(self, name='', domain=None, operator='ilike', limit=100):
+        """Make product.template autocomplete find Bravo alias barcodes too.
+
+        Alias matches are returned first. This is important for Inventory →
+        Products because that screen is product.template-based.
+        """
+        domain = domain or []
+        if name and operator not in ('not ilike', 'not like', '!=', '<>', 'not in'):
+            alias_domain = expression.AND([
+                domain,
+                self._bravo_template_alias_domain(name, operator),
+            ])
+            alias_templates = self.search(alias_domain, limit=limit)
+            alias_results = [(template.id, template.display_name) for template in alias_templates.sudo()]
+            if limit and len(alias_results) >= limit:
+                return alias_results
+
+            existing_ids = [record_id for record_id, _display_name in alias_results]
+            remaining = False if not limit else max(limit - len(existing_ids), 0)
+            super_domain = domain
+            if existing_ids:
+                super_domain = expression.AND([super_domain, [('id', 'not in', existing_ids)]])
+            return alias_results + super().name_search(name=name, domain=super_domain, operator=operator, limit=remaining)
+
+        return super().name_search(name=name, domain=domain, operator=operator, limit=limit)
 
     def action_open_bravo_barcode_aliases(self):
         self.ensure_one()

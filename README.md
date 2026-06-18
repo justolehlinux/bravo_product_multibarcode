@@ -11,6 +11,9 @@ Global additional product barcodes for `product.product` and POS.
 - Loads `bravo_barcodes_json` and `bravo_all_barcodes` into POS.
 - Patches the POS `product.product` model lookup so `getBy("barcode", alias)` returns the product.
 - Adds alias codes to the POS product search string.
+
+- Adds explicit Inventory/Stock search-view support for Odoo stock-specific product views.
+- Adds alias barcode search for stock.quant Inventory/On Hand views through `bravo_product_barcode_alias_search`.
 - Removes the obsolete `point_of_sale.assets` bundle entry and uses `point_of_sale._assets_pos` only.
 
 ## Install / update

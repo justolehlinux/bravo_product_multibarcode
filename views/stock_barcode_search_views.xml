@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Inventory app: Inventory → Products uses this stock-specific primary search view. -->
+    <record id="view_stock_product_template_search_bravo_multibarcode" model="ir.ui.view">
+        <field name="name">stock.product.template.search.bravo.multibarcode</field>
+        <field name="model">product.template</field>
+        <field name="inherit_id" ref="stock.product_template_search_form_view_stock"/>
+        <field name="priority" eval="90"/>
+        <field name="arch" type="xml">
+            <xpath expr="//search/field[@name='name']" position="attributes">
+                <attribute name="filter_domain">['|', '|', '|', '|', ('default_code', 'ilike', self), ('product_variant_ids.default_code', 'ilike', self), ('name', 'ilike', self), ('barcode', 'ilike', self), ('bravo_barcode_alias_search', 'ilike', self)]</attribute>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Inventory app: Inventory → Product Variants uses this stock-specific primary search view. -->
+    <record id="view_stock_product_product_search_bravo_multibarcode" model="ir.ui.view">
+        <field name="name">stock.product.product.search.bravo.multibarcode</field>
+        <field name="model">product.product</field>
+        <field name="inherit_id" ref="stock.stock_product_search_form_view"/>
+        <field name="priority" eval="90"/>
+        <field name="arch" type="xml">
+            <xpath expr="//search/field[@name='name']" position="attributes">
+                <attribute name="filter_domain">['|', '|', '|', ('default_code', 'ilike', self), ('name', 'ilike', self), ('barcode', 'ilike', self), ('bravo_barcode_alias_search', 'ilike', self)]</attribute>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Extra product.product search view used by stock quantity/product views. -->
+    <record id="view_stock_product_product_search_extra_bravo_multibarcode" model="ir.ui.view">
+        <field name="name">stock.product.product.search.extra.bravo.multibarcode</field>
+        <field name="model">product.product</field>
+        <field name="inherit_id" ref="stock.product_search_form_view_stock"/>
+        <field name="priority" eval="90"/>
+        <field name="arch" type="xml">
+            <xpath expr="//search/field[@name='name']" position="attributes">
+                <attribute name="filter_domain">['|', '|', '|', ('default_code', 'ilike', self), ('name', 'ilike', self), ('barcode', 'ilike', self), ('bravo_barcode_alias_search', 'ilike', self)]</attribute>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Inventory → Reporting → Stock uses this stock report search view. -->
+    <record id="view_stock_product_report_search_bravo_multibarcode" model="ir.ui.view">
+        <field name="name">stock.product.product.report.search.bravo.multibarcode</field>
+        <field name="model">product.product</field>
+        <field name="inherit_id" ref="stock.product_search_form_view_stock_report"/>
+        <field name="priority" eval="90"/>
+        <field name="arch" type="xml">
+            <xpath expr="//search/field[@name='name']" position="attributes">
+                <attribute name="filter_domain">['|', '|', '|', ('default_code', 'ilike', self), ('name', 'ilike', self), ('barcode', 'ilike', self), ('bravo_barcode_alias_search', 'ilike', self)]</attribute>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Inventory Adjustments / On Hand quants: product search field must also resolve alias barcode. -->
+    <record id="view_stock_quant_search_bravo_multibarcode" model="ir.ui.view">
+        <field name="name">stock.quant.search.bravo.multibarcode</field>
+        <field name="model">stock.quant</field>
+        <field name="inherit_id" ref="stock.quant_search_view"/>
+        <field name="priority" eval="90"/>
+        <field name="arch" type="xml">
+            <xpath expr="//search/field[@name='product_id']" position="attributes">
+                <attribute name="filter_domain">['|', ('product_id', 'ilike', self), ('bravo_product_barcode_alias_search', 'ilike', self)]</attribute>
+            </xpath>
+        </field>
+    </record>
+
+</odoo>
